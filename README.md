@@ -12,7 +12,7 @@ Spring Boot starter providing MCP tools for semantic vector search with pgvector
 </dependency>
 ```
 
-Requires Java 17+ and Spring AI 1.0.0+.
+Requires Java 21+ and Spring AI 1.0.0+.
 
 ## Tools
 
@@ -73,7 +73,7 @@ MCP_VECTOR_OPENAI_MODEL=text-embedding-3-small
 
 ## Requirements
 
-- Java 17+
+- Java 21+
 - Spring Boot 3.4+
 - Spring AI 1.0.0+
 - PostgreSQL with pgvector extension
