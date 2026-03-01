@@ -7,7 +7,7 @@
 
     <groupId>io.github.massimilianopili</groupId>
     <artifactId>mcp-vector-tools</artifactId>
-    <version>0.2.1</version>
+    <version>0.2.2</version>
     <packaging>jar</packaging>
 
     <name>MCP Vector Tools</name>
