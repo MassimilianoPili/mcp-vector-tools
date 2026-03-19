@@ -60,10 +60,10 @@ public class VectorConfig {
         VectorStore store = PgVectorStore.builder(jdbcTemplate, embeddingModel)
                 .dimensions(props.getDimensions())
                 .distanceType(PgVectorStore.PgDistanceType.COSINE_DISTANCE)
-                .indexType(PgVectorStore.PgIndexType.HNSW)
+                .indexType(PgVectorStore.PgIndexType.NONE)
                 .initializeSchema(true)
                 .build();
-        log.info("PgVectorStore: {} dim, COSINE_DISTANCE, HNSW index, provider={}",
+        log.info("PgVectorStore: {} dim, COSINE_DISTANCE, no index (seq scan), provider={}",
                 props.getDimensions(), props.getProvider());
         return store;
     }
