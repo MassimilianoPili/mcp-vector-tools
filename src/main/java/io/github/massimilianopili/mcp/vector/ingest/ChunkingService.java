@@ -18,6 +18,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Component
 public class ChunkingService {
@@ -54,6 +56,7 @@ public class ChunkingService {
 
         int filesProcessed = 0;
         int filesSkipped = 0;
+        int filesMigrated = 0;
         int totalChunks = 0;
         List<String> errors = new ArrayList<>();
 
@@ -62,10 +65,23 @@ public class ChunkingService {
             Set<String> trackedFiles = syncTracker.getTrackedFiles("jsonl");
 
             for (Path file : jsonlFiles) {
-                if (!syncTracker.needsReindex(file)) {
+                boolean fileChanged = syncTracker.isFileModified(file);
+                boolean versionStale = syncTracker.isVersionStale(file);
+
+                if (!fileChanged && !versionStale) {
                     filesSkipped++;
                     trackedFiles.remove(file.toString());
                     continue;
+                }
+
+                // Version-only migration: limita a MIGRATION_BATCH_LIMIT per run
+                if (!fileChanged && versionStale) {
+                    if (filesMigrated >= MIGRATION_BATCH_LIMIT) {
+                        filesSkipped++;
+                        trackedFiles.remove(file.toString());
+                        continue;
+                    }
+                    filesMigrated++;
                 }
 
                 try {
@@ -73,10 +89,7 @@ public class ChunkingService {
 
                     List<Document> docs = conversationParser.parse(file);
                     if (!docs.isEmpty()) {
-                        for (int i = 0; i < docs.size(); i += 50) {
-                            int end = Math.min(i + 50, docs.size());
-                            vectorStore.add(docs.subList(i, end));
-                        }
+                        addWithRetry(docs);
                         syncTracker.markIndexed(file, docs.size());
                         totalChunks += docs.size();
                     }
@@ -85,6 +98,8 @@ public class ChunkingService {
                 } catch (Exception e) {
                     log.error("Errore indicizzazione {}: {}", file, e.getMessage());
                     errors.add(file.getFileName().toString() + ": " + e.getMessage());
+                    syncTracker.markIndexed(file, 0);
+                    trackedFiles.remove(file.toString());
                 }
             }
 
@@ -100,6 +115,7 @@ public class ChunkingService {
         Map<String, Object> result = new HashMap<>();
         result.put("type", "conversation");
         result.put("files_processed", filesProcessed);
+        result.put("files_migrated", filesMigrated);
         result.put("files_skipped", filesSkipped);
         result.put("total_chunks", totalChunks);
         if (!errors.isEmpty()) result.put("errors", errors);
@@ -114,6 +130,7 @@ public class ChunkingService {
 
         int filesProcessed = 0;
         int filesSkipped = 0;
+        int filesMigrated = 0;
         int totalChunks = 0;
         List<String> errors = new ArrayList<>();
 
@@ -122,10 +139,23 @@ public class ChunkingService {
             Set<String> trackedFiles = syncTracker.getTrackedFiles("md");
 
             for (Path file : mdFiles) {
-                if (!syncTracker.needsReindex(file)) {
+                boolean fileChanged = syncTracker.isFileModified(file);
+                boolean versionStale = syncTracker.isVersionStale(file);
+
+                if (!fileChanged && !versionStale) {
                     filesSkipped++;
                     trackedFiles.remove(file.toString());
                     continue;
+                }
+
+                // Version-only migration: limita a MIGRATION_BATCH_LIMIT per run
+                if (!fileChanged && versionStale) {
+                    if (filesMigrated >= MIGRATION_BATCH_LIMIT) {
+                        filesSkipped++;
+                        trackedFiles.remove(file.toString());
+                        continue;
+                    }
+                    filesMigrated++;
                 }
 
                 try {
@@ -133,10 +163,7 @@ public class ChunkingService {
 
                     List<Document> docs = markdownParser.parse(file);
                     if (!docs.isEmpty()) {
-                        for (int i = 0; i < docs.size(); i += 50) {
-                            int end = Math.min(i + 50, docs.size());
-                            vectorStore.add(docs.subList(i, end));
-                        }
+                        addWithRetry(docs);
                         syncTracker.markIndexed(file, docs.size());
                         totalChunks += docs.size();
                     }
@@ -145,6 +172,8 @@ public class ChunkingService {
                 } catch (Exception e) {
                     log.error("Errore indicizzazione {}: {}", file, e.getMessage());
                     errors.add(file.getFileName().toString() + ": " + e.getMessage());
+                    syncTracker.markIndexed(file, 0);
+                    trackedFiles.remove(file.toString());
                 }
             }
 
@@ -160,10 +189,51 @@ public class ChunkingService {
         Map<String, Object> result = new HashMap<>();
         result.put("type", "docs");
         result.put("files_processed", filesProcessed);
+        result.put("files_migrated", filesMigrated);
         result.put("files_skipped", filesSkipped);
         result.put("total_chunks", totalChunks);
         if (!errors.isEmpty()) result.put("errors", errors);
         return result;
+    }
+
+    /**
+     * Avvia reindex asincrono su un thread platform (non virtual) per evitare InterruptedException
+     * dal timeout del tool MCP. Ritorna immediatamente con stato "started".
+     */
+    public Map<String, Object> reindexAsync(String type) {
+        if (indexingInProgress.get()) {
+            return Map.of("status", "already_running", "message", "Indicizzazione gia' in corso");
+        }
+
+        indexingInProgress.set(true);
+        Thread.ofPlatform().name("embeddings-reindex").start(() -> {
+            try {
+                Map<String, Object> result = new HashMap<>();
+                if ("conversation".equals(type) || "all".equals(type)) {
+                    result.put("conversations", reindexConversations());
+                }
+                if ("docs".equals(type) || "all".equals(type)) {
+                    result.put("docs", reindexDocs());
+                }
+                lastResult.set(result);
+                log.info("Reindex completato: {}", result);
+            } catch (Exception e) {
+                lastResult.set(Map.of("error", e.getMessage()));
+                log.error("Reindex fallito: {}", e.getMessage(), e);
+            } finally {
+                indexingInProgress.set(false);
+            }
+        });
+
+        return Map.of("status", "started", "type", type,
+                "message", "Indicizzazione avviata in background. Usa embeddings_stats per monitorare.");
+    }
+
+    public Map<String, Object> getReindexStatus() {
+        Map<String, Object> status = new HashMap<>();
+        status.put("indexing_in_progress", indexingInProgress.get());
+        status.put("last_result", lastResult.get());
+        return status;
     }
 
     private List<Path> findFiles(Path basePath, String glob) throws IOException {
@@ -177,39 +247,75 @@ public class ChunkingService {
         return result;
     }
 
+    private static final List<String> EXCLUDED_DIRS = List.of(
+            "/node_modules/", "/.git/", "/target/", "/claude-shared/plugins/cache/",
+            "/.m2/", "/.cache/", "/.local/", "/vendor/", "/build/",
+            "/code-server/local/", "/code-server/config/", "/.config/");
+
+    private final AtomicBoolean indexingInProgress = new AtomicBoolean(false);
+    private final AtomicReference<Map<String, Object>> lastResult = new AtomicReference<>(Map.of());
+
     private List<Path> findMarkdownFiles(Path basePath) throws IOException {
         List<Path> result = new ArrayList<>();
 
-        addIfExists(result, basePath.resolve("CLAUDE.md"));
-        addIfExists(result, basePath.resolve("README.md"));
-
-        Path docsDir = basePath.resolve("docs");
-        if (Files.isDirectory(docsDir)) {
-            try (DirectoryStream<Path> stream = Files.newDirectoryStream(docsDir, "*.md")) {
-                stream.forEach(result::add);
-            }
+        // Scan ricorsivo di tutti i .md sotto basePath
+        if (Files.isDirectory(basePath)) {
+            Files.walk(basePath)
+                    .filter(Files::isRegularFile)
+                    .filter(p -> p.toString().endsWith(".md"))
+                    .filter(p -> {
+                        String path = p.toString();
+                        return EXCLUDED_DIRS.stream().noneMatch(path::contains);
+                    })
+                    .forEach(result::add);
         }
 
-        Path variDir = basePath.resolve("Vari");
-        if (Files.isDirectory(variDir)) {
-            try (DirectoryStream<Path> stream = Files.newDirectoryStream(variDir)) {
-                for (Path subDir : stream) {
-                    if (Files.isDirectory(subDir)) {
-                        addIfExists(result, subDir.resolve("CLAUDE.md"));
-                    }
-                }
-            }
-        }
-
+        // MEMORY.md (fuori da basePath)
         Path memoryFile = Path.of(System.getProperty("user.home"),
                 ".claude/projects/-data-massimiliano/memory/MEMORY.md");
         addIfExists(result, memoryFile);
 
+        log.info("Trovati {} file .md da indicizzare sotto {}", result.size(), basePath);
         return result;
     }
 
     private void addIfExists(List<Path> list, Path file) {
         if (Files.isRegularFile(file)) list.add(file);
+    }
+
+    private static final int MIGRATION_BATCH_LIMIT = 250;
+    private static final int MAX_RETRIES = 3;
+    private static final int BATCH_SIZE = 20;
+
+    private void addWithRetry(List<Document> docs) {
+        for (int i = 0; i < docs.size(); i += BATCH_SIZE) {
+            int end = Math.min(i + BATCH_SIZE, docs.size());
+            List<Document> batch = docs.subList(i, end);
+            int attempt = 0;
+            while (true) {
+                try {
+                    vectorStore.add(batch);
+                    break;
+                } catch (Exception e) {
+                    String msg = e.getMessage();
+                    // Errori HTTP 4xx: permanenti, skip immediato (no retry)
+                    if (msg != null && (msg.contains("400 -") || msg.contains("413 -")
+                            || msg.contains("422 -") || msg.contains("context length"))) {
+                        throw e;
+                    }
+                    // Errori transitori (5xx, timeout, connection reset): retry con backoff
+                    attempt++;
+                    if (attempt >= MAX_RETRIES) throw e;
+                    long delay = attempt * 5000L;
+                    log.warn("Retry {}/{} embedding batch ({}): {}",
+                            attempt, MAX_RETRIES, batch.size(), msg);
+                    try { Thread.sleep(delay); } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException("Interrotto durante retry", ie);
+                    }
+                }
+            }
+        }
     }
 
     private void removeDocumentsForFile(String filePath) {

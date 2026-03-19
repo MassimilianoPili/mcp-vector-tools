@@ -4,6 +4,7 @@ import io.github.massimilianopili.mcp.vector.ingest.ChunkingService;
 import io.github.massimilianopili.mcp.vector.ingest.ConversationParser;
 import io.github.massimilianopili.mcp.vector.ingest.MarkdownParser;
 import io.github.massimilianopili.mcp.vector.ingest.SyncTracker;
+import io.github.massimilianopili.mcp.vector.search.MmrReranker;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -14,7 +15,7 @@ import org.springframework.context.annotation.Import;
 
 @AutoConfiguration
 @ConditionalOnProperty(name = "mcp.vector.enabled", havingValue = "true")
-@Import({VectorConfig.class, VectorTools.class,
+@Import({VectorConfig.class, VectorTools.class, MmrReranker.class,
          ChunkingService.class, ConversationParser.class, MarkdownParser.class, SyncTracker.class})
 public class VectorToolsAutoConfiguration {
 

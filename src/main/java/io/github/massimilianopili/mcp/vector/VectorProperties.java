@@ -39,6 +39,17 @@ public class VectorProperties {
     private String openaiApiKey;
     private String openaiModel = "text-embedding-3-small";
 
+    // --- MMR (Maximal Marginal Relevance) ---
+    private double mmrLambda = 0.6;
+    private int mmrCandidateCount = 50;
+
+    // --- Adaptive-k ---
+    private double adaptiveKAbsoluteThreshold = 0.3;
+    private double adaptiveKRelativeDropoff = 0.65;
+    private double adaptiveKGapThreshold = 0.05;
+    private int adaptiveKMinK = 3;
+    private int adaptiveKMaxK = 20;
+
     // --- Getters/Setters ---
 
     public boolean isEnabled() { return enabled; }
@@ -82,4 +93,25 @@ public class VectorProperties {
 
     public String getOpenaiModel() { return openaiModel; }
     public void setOpenaiModel(String openaiModel) { this.openaiModel = openaiModel; }
+
+    public double getMmrLambda() { return mmrLambda; }
+    public void setMmrLambda(double mmrLambda) { this.mmrLambda = mmrLambda; }
+
+    public int getMmrCandidateCount() { return mmrCandidateCount; }
+    public void setMmrCandidateCount(int mmrCandidateCount) { this.mmrCandidateCount = mmrCandidateCount; }
+
+    public double getAdaptiveKAbsoluteThreshold() { return adaptiveKAbsoluteThreshold; }
+    public void setAdaptiveKAbsoluteThreshold(double v) { this.adaptiveKAbsoluteThreshold = v; }
+
+    public double getAdaptiveKRelativeDropoff() { return adaptiveKRelativeDropoff; }
+    public void setAdaptiveKRelativeDropoff(double v) { this.adaptiveKRelativeDropoff = v; }
+
+    public double getAdaptiveKGapThreshold() { return adaptiveKGapThreshold; }
+    public void setAdaptiveKGapThreshold(double v) { this.adaptiveKGapThreshold = v; }
+
+    public int getAdaptiveKMinK() { return adaptiveKMinK; }
+    public void setAdaptiveKMinK(int v) { this.adaptiveKMinK = v; }
+
+    public int getAdaptiveKMaxK() { return adaptiveKMaxK; }
+    public void setAdaptiveKMaxK(int v) { this.adaptiveKMaxK = v; }
 }

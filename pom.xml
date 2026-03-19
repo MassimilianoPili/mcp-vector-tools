@@ -7,7 +7,7 @@
 
     <groupId>io.github.massimilianopili</groupId>
     <artifactId>mcp-vector-tools</artifactId>
-    <version>0.2.2</version>
+    <version>0.3.1</version>
     <packaging>jar</packaging>
 
     <name>MCP Vector Tools</name>
@@ -38,8 +38,8 @@
     <properties>
         <java.version>21</java.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <spring-ai.version>1.0.0</spring-ai.version>
-        <spring-boot.version>3.4.1</spring-boot.version>
+        <spring-ai.version>1.1.1</spring-ai.version>
+        <spring-boot.version>3.5.11</spring-boot.version>
     </properties>
 
     <dependencies>

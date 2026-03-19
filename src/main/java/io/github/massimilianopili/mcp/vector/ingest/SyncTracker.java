@@ -11,8 +11,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 @Component
@@ -34,9 +36,14 @@ public class SyncTracker {
                     chunk_count INTEGER NOT NULL,
                     indexed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )""");
+        jdbc.execute("ALTER TABLE embeddings_sync ADD COLUMN IF NOT EXISTS chunk_version INTEGER DEFAULT 0");
     }
 
     public boolean needsReindex(Path file) {
+        return isFileModified(file) || isVersionStale(file);
+    }
+
+    public boolean isFileModified(Path file) {
         try {
             Instant fileModified = Files.getLastModifiedTime(file).toInstant();
             List<Timestamp> rows = jdbc.query(
@@ -52,17 +59,32 @@ public class SyncTracker {
         }
     }
 
+    public boolean isVersionStale(Path file) {
+        try {
+            List<Integer> rows = jdbc.query(
+                    "SELECT chunk_version FROM embeddings_sync WHERE file_path = ?",
+                    (rs, i) -> rs.getInt("chunk_version"),
+                    file.toString());
+
+            if (rows.isEmpty()) return false; // file non tracciato, isFileModified lo cattura
+            return rows.get(0) < TextSplitter.CHUNK_VERSION;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     public void markIndexed(Path file, int chunkCount) {
         try {
             Instant fileModified = Files.getLastModifiedTime(file).toInstant();
             jdbc.update("""
-                    INSERT INTO embeddings_sync (file_path, last_modified, chunk_count, indexed_at)
-                    VALUES (?, ?, ?, NOW())
+                    INSERT INTO embeddings_sync (file_path, last_modified, chunk_count, indexed_at, chunk_version)
+                    VALUES (?, ?, ?, NOW(), ?)
                     ON CONFLICT (file_path) DO UPDATE
                     SET last_modified = EXCLUDED.last_modified,
                         chunk_count = EXCLUDED.chunk_count,
-                        indexed_at = NOW()""",
-                    file.toString(), Timestamp.from(fileModified), chunkCount);
+                        indexed_at = NOW(),
+                        chunk_version = EXCLUDED.chunk_version""",
+                    file.toString(), Timestamp.from(fileModified), chunkCount, TextSplitter.CHUNK_VERSION);
         } catch (Exception e) {
             log.error("Errore aggiornamento sync {}: {}", file, e.getMessage());
         }
@@ -80,7 +102,7 @@ public class SyncTracker {
                 pattern));
     }
 
-    public List<java.util.Map<String, Object>> getStats() {
+    public List<Map<String, Object>> getStats() {
         return jdbc.queryForList("""
                 SELECT
                     CASE
@@ -94,5 +116,26 @@ public class SyncTracker {
                 FROM embeddings_sync
                 GROUP BY 1
                 ORDER BY 1""");
+    }
+
+    public int countStaleFiles() {
+        Integer count = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM embeddings_sync WHERE chunk_version < ?",
+                Integer.class, TextSplitter.CHUNK_VERSION);
+        return count != null ? count : 0;
+    }
+
+    public Map<String, Object> getVersionStats() {
+        Map<String, Object> stats = new HashMap<>();
+        stats.put("current_version", TextSplitter.CHUNK_VERSION);
+        stats.put("stale_files", countStaleFiles());
+
+        List<Map<String, Object>> byVersion = jdbc.queryForList("""
+                SELECT chunk_version, COUNT(*) AS file_count, SUM(chunk_count) AS total_chunks
+                FROM embeddings_sync
+                GROUP BY chunk_version
+                ORDER BY chunk_version""");
+        stats.put("by_version", byVersion);
+        return stats;
     }
 }

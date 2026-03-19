@@ -20,8 +20,6 @@ import java.util.Map;
 public class ConversationParser {
 
     private static final Logger log = LoggerFactory.getLogger(ConversationParser.class);
-    private static final int MAX_CHUNK_CHARS = 2000;
-    private static final int OVERLAP_CHARS = 200;
     private final ObjectMapper mapper = new ObjectMapper();
 
     public List<Document> parse(Path jsonlFile) {
@@ -116,22 +114,26 @@ public class ConversationParser {
             String sessionId, String fileName, String filePath, int turnIndex) {
 
         List<Document> docs = new ArrayList<>();
-        String fullText = "DOMANDA: " + question.trim() + "\n\nRISPOSTA: " + answer.trim();
+        String sessionShort = sessionId.length() > 8 ? sessionId.substring(0, 8) : sessionId;
+        String contextPrefix = "[Conversazione: " + sessionShort + "]\n[Turno: " + turnIndex + "]\n\n";
+        String fullText = contextPrefix + "DOMANDA: " + question.trim() + "\n\nRISPOSTA: " + answer.trim();
 
-        if (fullText.length() <= MAX_CHUNK_CHARS) {
+        if (fullText.length() <= TextSplitter.MAX_CHUNK_CHARS) {
             docs.add(createDocument(fullText, sessionId, fileName, filePath, turnIndex, 0));
         } else {
-            String prefix = "DOMANDA: " + truncate(question.trim(), 300) + "\n\nRISPOSTA: ";
-            int availableChars = MAX_CHUNK_CHARS - prefix.length();
-            if (availableChars < 200) availableChars = 200;
+            // Domanda troncata come contesto in ogni chunk
+            String prefix = contextPrefix + "DOMANDA: " + truncate(question.trim(), 200) + "\n\nRISPOSTA:\n";
+            int availableChars = TextSplitter.MAX_CHUNK_CHARS - prefix.length();
+            if (availableChars < TextSplitter.MIN_CHUNK_CHARS)
+                availableChars = TextSplitter.MIN_CHUNK_CHARS;
+
+            // Recursive split della risposta con confini semantici
+            List<String> chunks = TextSplitter.splitAndMerge(answer.trim(), availableChars);
 
             int subIndex = 0;
-            int pos = 0;
-            while (pos < answer.length()) {
-                int end = Math.min(pos + availableChars, answer.length());
-                String chunk = prefix + answer.substring(pos, end).trim();
-                docs.add(createDocument(chunk, sessionId, fileName, filePath, turnIndex, subIndex));
-                pos += availableChars - OVERLAP_CHARS;
+            for (String chunk : chunks) {
+                String enrichedChunk = prefix + chunk;
+                docs.add(createDocument(enrichedChunk, sessionId, fileName, filePath, turnIndex, subIndex));
                 subIndex++;
             }
         }
@@ -147,6 +149,7 @@ public class ConversationParser {
         metadata.put("source_file", filePath);
         metadata.put("turn_index", turnIndex);
         metadata.put("sub_index", subIndex);
+        metadata.put("chunk_version", TextSplitter.CHUNK_VERSION);
         return new Document(text, metadata);
     }
 

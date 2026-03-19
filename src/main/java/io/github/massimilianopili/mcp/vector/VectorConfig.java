@@ -6,7 +6,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.ollama.OllamaEmbeddingModel;
 import org.springframework.ai.ollama.api.OllamaApi;
-import org.springframework.ai.ollama.api.OllamaOptions;
+import org.springframework.ai.ollama.api.OllamaEmbeddingOptions;
 import org.springframework.ai.openai.OpenAiEmbeddingModel;
 import org.springframework.ai.openai.OpenAiEmbeddingOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
@@ -22,6 +22,9 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import javax.sql.DataSource;
+import java.time.Duration;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.web.client.RestClient;
 
 @Configuration
 @ConditionalOnProperty(name = "mcp.vector.enabled", havingValue = "true")
@@ -42,12 +45,16 @@ public class VectorConfig {
         return ds;
     }
 
+    @Bean("vectorEmbeddingModel")
+    public EmbeddingModel vectorEmbeddingModel(VectorProperties props) {
+        return createEmbeddingModel(props);
+    }
+
     @Bean("vectorVectorStore")
     public VectorStore vectorVectorStore(
             @Qualifier("vectorDataSource") DataSource dataSource,
+            @Qualifier("vectorEmbeddingModel") EmbeddingModel embeddingModel,
             VectorProperties props) {
-
-        EmbeddingModel embeddingModel = createEmbeddingModel(props);
 
         JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
         VectorStore store = PgVectorStore.builder(jdbcTemplate, embeddingModel)
@@ -73,12 +80,17 @@ public class VectorConfig {
             case "ollama" -> {
                 log.info("Embedding provider: Ollama ({}), model: {}",
                         props.getOllamaBaseUrl(), props.getOllamaModel());
+                SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+                factory.setReadTimeout(Duration.ofSeconds(300));
+                factory.setConnectTimeout(Duration.ofSeconds(15));
+                RestClient.Builder rcBuilder = RestClient.builder().requestFactory(factory);
                 OllamaApi api = OllamaApi.builder()
                         .baseUrl(props.getOllamaBaseUrl())
+                        .restClientBuilder(rcBuilder)
                         .build();
                 yield OllamaEmbeddingModel.builder()
                         .ollamaApi(api)
-                        .defaultOptions(OllamaOptions.builder()
+                        .defaultOptions(OllamaEmbeddingOptions.builder()
                                 .model(props.getOllamaModel())
                                 .build())
                         .build();
