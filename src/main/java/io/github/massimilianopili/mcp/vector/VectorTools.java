@@ -88,6 +88,34 @@ public class VectorTools {
         }
     }
 
+    @Tool(name = "embeddings_search_code",
+          description = "Semantic search in indexed source code (Java, Go, Python, TypeScript, C, Rust) with MMR. "
+                      + "Returns relevant code chunks with file path, language, function/class name, and line numbers. "
+                      + "Uses AST-aware chunking: each result is a complete function or method.")
+    public List<Map<String, Object>> searchCode(
+            @ToolParam(description = "Text or code pattern to search semantically") String query,
+            @ToolParam(description = "Maximum number of results (default 5)", required = false) Integer topK,
+            @ToolParam(description = "Language filter: java, go, python, typescript, c, rust (optional)", required = false) String language) {
+        try {
+            int k = (topK != null && topK > 0) ? Math.min(topK, 20) : 5;
+
+            // If language filter, we add it to the query for better embedding match
+            // and also filter in post-processing
+            List<Map<String, Object>> results = mmrSearch(query, k, 0.60, "code");
+
+            if (language != null && !language.isBlank()) {
+                results = results.stream()
+                        .filter(r -> language.equals(r.get("language")))
+                        .toList();
+            }
+
+            return results;
+        } catch (Exception e) {
+            log.error("Errore ricerca codice: {}", e.getMessage());
+            return List.of(Map.of("error", "Errore: " + e.getMessage()));
+        }
+    }
+
     @Tool(name = "embeddings_stats",
           description = "Shows statistics on indexed embeddings: "
                       + "count by type, number of files and chunks, last update. "
@@ -122,8 +150,9 @@ public class VectorTools {
                       + "returns immediately with status 'started'. Use embeddings_stats to monitor progress.")
     public Map<String, Object> reindex(
             @ToolParam(description = "Type to re-index: conversation, docs, all") String type) {
-        if (type == null || (!type.equals("conversation") && !type.equals("docs") && !type.equals("all"))) {
-            return Map.of("error", "Tipo non valido. Usa: conversation, docs, all");
+        if (type == null || (!type.equals("conversation") && !type.equals("docs")
+                && !type.equals("code") && !type.equals("all"))) {
+            return Map.of("error", "Tipo non valido. Usa: conversation, docs, code, all");
         }
         return chunkingService.reindexAsync(type);
     }

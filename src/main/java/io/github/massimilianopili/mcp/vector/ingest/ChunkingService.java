@@ -30,20 +30,26 @@ public class ChunkingService {
     private final JdbcTemplate jdbc;
     private final ConversationParser conversationParser;
     private final MarkdownParser markdownParser;
+    private final CodeParser codeParser;
     private final SyncTracker syncTracker;
     private final VectorProperties properties;
+
+    private static final List<String> CODE_EXTENSIONS = List.of(
+            ".java", ".go", ".py", ".ts", ".tsx", ".js", ".jsx", ".c", ".h", ".rs");
 
     public ChunkingService(
             @Qualifier("vectorVectorStore") VectorStore vectorStore,
             @Qualifier("vectorJdbcTemplate") JdbcTemplate jdbc,
             ConversationParser conversationParser,
             MarkdownParser markdownParser,
+            CodeParser codeParser,
             SyncTracker syncTracker,
             VectorProperties properties) {
         this.vectorStore = vectorStore;
         this.jdbc = jdbc;
         this.conversationParser = conversationParser;
         this.markdownParser = markdownParser;
+        this.codeParser = codeParser;
         this.syncTracker = syncTracker;
         this.properties = properties;
     }
@@ -196,6 +202,106 @@ public class ChunkingService {
         return result;
     }
 
+    public Map<String, Object> reindexCode() {
+        String codePathsConfig = properties.getCodePaths();
+        if (codePathsConfig == null || codePathsConfig.isBlank()) {
+            return Map.of("error", "mcp.vector.code-paths non configurato");
+        }
+
+        int filesProcessed = 0;
+        int filesSkipped = 0;
+        int filesMigrated = 0;
+        int totalChunks = 0;
+        List<String> errors = new ArrayList<>();
+
+        try {
+            String[] roots = codePathsConfig.split(",");
+            List<Path> codeFiles = new ArrayList<>();
+            for (String root : roots) {
+                codeFiles.addAll(findCodeFiles(Path.of(root.trim())));
+            }
+
+            Set<String> trackedFiles = syncTracker.getTrackedFiles("code");
+
+            for (Path file : codeFiles) {
+                boolean fileChanged = syncTracker.isFileModified(file);
+                boolean versionStale = syncTracker.isVersionStale(file);
+
+                if (!fileChanged && !versionStale) {
+                    filesSkipped++;
+                    trackedFiles.remove(file.toString());
+                    continue;
+                }
+
+                if (!fileChanged && versionStale) {
+                    if (filesMigrated >= MIGRATION_BATCH_LIMIT) {
+                        filesSkipped++;
+                        trackedFiles.remove(file.toString());
+                        continue;
+                    }
+                    filesMigrated++;
+                }
+
+                try {
+                    removeDocumentsForFile(file.toString());
+
+                    List<Document> docs = codeParser.parse(file);
+                    if (!docs.isEmpty()) {
+                        addWithRetry(docs);
+                        syncTracker.markIndexed(file, docs.size());
+                        totalChunks += docs.size();
+                    }
+                    filesProcessed++;
+                    trackedFiles.remove(file.toString());
+                } catch (Exception e) {
+                    log.error("Errore indicizzazione codice {}: {}", file, e.getMessage());
+                    errors.add(file.getFileName().toString() + ": " + e.getMessage());
+                    syncTracker.markIndexed(file, 0);
+                    trackedFiles.remove(file.toString());
+                }
+            }
+
+            for (String deletedFile : trackedFiles) {
+                removeDocumentsForFile(deletedFile);
+                syncTracker.removeTracking(deletedFile);
+            }
+
+        } catch (Exception e) {
+            return Map.of("error", "Errore scansione codice: " + e.getMessage());
+        }
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("type", "code");
+        result.put("files_processed", filesProcessed);
+        result.put("files_migrated", filesMigrated);
+        result.put("files_skipped", filesSkipped);
+        result.put("total_chunks", totalChunks);
+        if (!errors.isEmpty()) result.put("errors", errors);
+        return result;
+    }
+
+    private List<Path> findCodeFiles(Path basePath) throws IOException {
+        List<Path> result = new ArrayList<>();
+        if (!Files.isDirectory(basePath)) return result;
+
+        Files.walk(basePath)
+                .filter(Files::isRegularFile)
+                .filter(p -> {
+                    String name = p.getFileName().toString();
+                    return CODE_EXTENSIONS.stream().anyMatch(name::endsWith);
+                })
+                .filter(p -> {
+                    String path = p.toString();
+                    return EXCLUDED_DIRS.stream().noneMatch(path::contains);
+                })
+                .filter(p -> !p.toString().contains("/code-server/"))
+                .filter(p -> !p.toString().contains("/ollama/"))
+                .forEach(result::add);
+
+        log.info("Trovati {} file codice da indicizzare sotto {}", result.size(), basePath);
+        return result;
+    }
+
     /**
      * Avvia reindex asincrono su un thread platform (non virtual) per evitare InterruptedException
      * dal timeout del tool MCP. Ritorna immediatamente con stato "started".
@@ -214,6 +320,9 @@ public class ChunkingService {
                 }
                 if ("docs".equals(type) || "all".equals(type)) {
                     result.put("docs", reindexDocs());
+                }
+                if ("code".equals(type) || "all".equals(type)) {
+                    result.put("code", reindexCode());
                 }
                 lastResult.set(result);
                 log.info("Reindex completato: {}", result);

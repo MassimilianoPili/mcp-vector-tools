@@ -26,6 +26,7 @@ public class VectorProperties {
     // --- Path ingestion ---
     private String conversationsPath;
     private String docsPath;
+    private String codePaths;
 
     // --- Provider: Ollama ---
     private String ollamaBaseUrl = "http://ollama:11434";
@@ -75,6 +76,9 @@ public class VectorProperties {
 
     public String getDocsPath() { return docsPath; }
     public void setDocsPath(String docsPath) { this.docsPath = docsPath; }
+
+    public String getCodePaths() { return codePaths; }
+    public void setCodePaths(String codePaths) { this.codePaths = codePaths; }
 
     public String getOllamaBaseUrl() { return ollamaBaseUrl; }
     public void setOllamaBaseUrl(String ollamaBaseUrl) { this.ollamaBaseUrl = ollamaBaseUrl; }
