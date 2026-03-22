@@ -29,8 +29,10 @@ public class VectorToolsAutoConfiguration {
     @ConditionalOnMissingBean(CodeParser.class)
     public CodeParser vectorCodeParser() {
         try {
+            // Verify JNI loads by instantiating a language
+            new org.treesitter.TreeSitterJava();
             CodeParser parser = new CodeParser();
-            log.info("CodeParser initialized (tree-sitter JNI loaded)");
+            log.info("CodeParser initialized (tree-sitter bonede JNI loaded)");
             return parser;
         } catch (UnsatisfiedLinkError | Exception e) {
             log.warn("CodeParser unavailable (tree-sitter JNI failed: {}). Code embedding disabled.", e.getMessage());

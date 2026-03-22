@@ -1,7 +1,6 @@
 package io.github.massimilianopili.mcp.vector.ingest;
 
-import ch.usi.si.seart.treesitter.*;
-import ch.usi.si.seart.treesitter.Language;
+import org.treesitter.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -10,9 +9,10 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.function.Supplier;
 
 /**
- * AST-aware code parser for embedding. Uses tree-sitter to parse source files
+ * AST-aware code parser for embedding. Uses tree-sitter (bonede) to parse source files
  * and produce Document chunks aligned to semantic boundaries (functions, classes, methods).
  *
  * Instantiated as @Bean in VectorToolsAutoConfiguration (not @Component)
@@ -23,17 +23,17 @@ public class CodeParser {
     private static final Logger log = LoggerFactory.getLogger(CodeParser.class);
     private static final int MAX_CHUNK_CHARS = 1680;
 
-    private static final Map<String, Language> EXTENSION_MAP = Map.ofEntries(
-            Map.entry(".java", Language.JAVA),
-            Map.entry(".go", Language.GO),
-            Map.entry(".py", Language.PYTHON),
-            Map.entry(".ts", Language.TYPESCRIPT),
-            Map.entry(".tsx", Language.TSX),
-            Map.entry(".js", Language.JAVASCRIPT),
-            Map.entry(".jsx", Language.JAVASCRIPT),
-            Map.entry(".c", Language.C),
-            Map.entry(".h", Language.C),
-            Map.entry(".rs", Language.RUST)
+    private static final Map<String, Supplier<TSLanguage>> EXTENSION_MAP = Map.ofEntries(
+            Map.entry(".java", TreeSitterJava::new),
+            Map.entry(".go", TreeSitterGo::new),
+            Map.entry(".py", TreeSitterPython::new),
+            Map.entry(".ts", TreeSitterTypescript::new),
+            Map.entry(".tsx", TreeSitterTypescript::new),
+            Map.entry(".js", TreeSitterJavascript::new),
+            Map.entry(".jsx", TreeSitterJavascript::new),
+            Map.entry(".c", TreeSitterC::new),
+            Map.entry(".h", TreeSitterC::new),
+            Map.entry(".rs", TreeSitterRust::new)
     );
 
     private static final Map<String, Set<String>> CLASS_TYPES = Map.of(
@@ -57,7 +57,7 @@ public class CodeParser {
     );
 
     public List<Document> parse(Path sourceFile) {
-        Language lang = detectLanguage(sourceFile);
+        TSLanguage lang = detectLanguage(sourceFile);
         if (lang == null) return List.of();
 
         String langName = detectLangName(sourceFile);
@@ -68,22 +68,22 @@ public class CodeParser {
             String filePath = sourceFile.toString();
             String fileName = sourceFile.getFileName().toString();
 
-            try (Parser parser = Parser.getFor(lang);
-                 Tree tree = parser.parse(source)) {
+            TSParser parser = new TSParser();
+            parser.setLanguage(lang);
+            TSTree tree = parser.parseString(null, source);
+            TSNode root = tree.getRootNode();
 
-                Node root = tree.getRootNode();
-                int chunkIndex = 0;
-                chunkIndex = walkForChunks(root, source, langName, filePath, fileName,
-                        null, documents, chunkIndex);
+            int chunkIndex = 0;
+            chunkIndex = walkForChunks(root, source, langName, filePath, fileName,
+                    null, documents, chunkIndex);
 
-                // If no symbols found (e.g. script file), chunk the whole file
-                if (documents.isEmpty() && !source.isBlank()) {
-                    String prefix = buildPrefix(fileName, langName, null, null);
-                    List<String> chunks = splitByLines(source, MAX_CHUNK_CHARS - prefix.length());
-                    for (String chunk : chunks) {
-                        documents.add(createDocument(prefix + chunk, filePath, fileName,
-                                langName, null, null, 1, source.split("\n").length, chunkIndex++));
-                    }
+            // If no symbols found (e.g. script file), chunk the whole file
+            if (documents.isEmpty() && !source.isBlank()) {
+                String prefix = buildPrefix(fileName, langName, null, null);
+                List<String> chunks = splitByLines(source, MAX_CHUNK_CHARS - prefix.length());
+                for (String chunk : chunks) {
+                    documents.add(createDocument(prefix + chunk, filePath, fileName,
+                            langName, null, null, 1, source.split("\n").length, chunkIndex++));
                 }
             }
         } catch (IOException e) {
@@ -95,7 +95,7 @@ public class CodeParser {
         return documents;
     }
 
-    private int walkForChunks(Node node, String source, String langName,
+    private int walkForChunks(TSNode node, String source, String langName,
                                String filePath, String fileName,
                                String parentClass, List<Document> documents, int chunkIndex) {
         String nodeType = node.getType();
@@ -104,13 +104,11 @@ public class CodeParser {
 
         if (classDefs.contains(nodeType)) {
             String className = extractName(node, source);
-            // Walk children to find methods
             for (int i = 0; i < node.getChildCount(); i++) {
                 chunkIndex = walkForChunks(node.getChild(i), source, langName,
                         filePath, fileName, className, documents, chunkIndex);
             }
 
-            // Also create a chunk for the class declaration itself (without body)
             String classText = extractClassHeader(node, source);
             if (!classText.isBlank()) {
                 String prefix = buildPrefix(fileName, langName, className, null);
@@ -128,7 +126,6 @@ public class CodeParser {
             int startLine = node.getStartPoint().getRow() + 1;
             int endLine = node.getEndPoint().getRow() + 1;
 
-            // Include leading comment/docstring
             String withComment = includeLeadingComment(node, source, text);
 
             String prefix = buildPrefix(fileName, langName, parentClass, funcName);
@@ -138,7 +135,6 @@ public class CodeParser {
                 documents.add(createDocument(prefix + withComment, filePath, fileName,
                         langName, parentClass, funcName, startLine, endLine, chunkIndex++));
             } else {
-                // Split large function by lines
                 List<String> chunks = splitByLines(withComment, available);
                 for (String chunk : chunks) {
                     documents.add(createDocument(prefix + chunk, filePath, fileName,
@@ -148,7 +144,6 @@ public class CodeParser {
             return chunkIndex;
         }
 
-        // Recurse into children
         for (int i = 0; i < node.getChildCount(); i++) {
             chunkIndex = walkForChunks(node.getChild(i), source, langName,
                     filePath, fileName, parentClass, documents, chunkIndex);
@@ -183,34 +178,41 @@ public class CodeParser {
         return new Document(text, metadata);
     }
 
-    private String extractName(Node node, String source) {
+    private String extractName(TSNode node, String source) {
+        // Pass 1: prefer field_identifier (Go method names) over identifier (receiver names)
         for (int i = 0; i < node.getChildCount(); i++) {
-            Node child = node.getChild(i);
+            TSNode child = node.getChild(i);
             String t = child.getType();
-            if (t.equals("identifier") || t.equals("name")
-                    || t.equals("type_identifier") || t.equals("property_identifier")) {
+            if (t.equals("field_identifier") || t.equals("name")) {
+                return getNodeText(child, source);
+            }
+        }
+        // Pass 2: fallback to identifier, type_identifier, property_identifier
+        for (int i = 0; i < node.getChildCount(); i++) {
+            TSNode child = node.getChild(i);
+            String t = child.getType();
+            if (t.equals("identifier") || t.equals("type_identifier")
+                    || t.equals("property_identifier")) {
                 return getNodeText(child, source);
             }
         }
         return "anonymous";
     }
 
-    private String extractClassHeader(Node node, String source) {
+    private String extractClassHeader(TSNode node, String source) {
         String text = getNodeText(node, source);
         int braceIdx = text.indexOf('{');
         if (braceIdx > 0) {
             return text.substring(0, braceIdx).trim();
         }
-        // Python/Go: take first 2 lines
         String[] lines = text.split("\n", 3);
         return lines.length >= 2 ? lines[0] + "\n" + lines[1] : lines[0];
     }
 
-    private String includeLeadingComment(Node node, String source, String nodeText) {
+    private String includeLeadingComment(TSNode node, String source, String nodeText) {
         int nodeStart = node.getStartByte();
         if (nodeStart <= 0) return nodeText;
 
-        // Look backwards for comment block
         String before = source.substring(Math.max(0, nodeStart - 500), nodeStart);
         String[] lines = before.split("\n");
 
@@ -250,18 +252,19 @@ public class CodeParser {
         return chunks;
     }
 
-    private String getNodeText(Node node, String source) {
+    private String getNodeText(TSNode node, String source) {
         int start = node.getStartByte();
         int end = node.getEndByte();
-        if (start >= 0 && end <= source.length() && start < end) {
-            return source.substring(start, end);
+        byte[] bytes = source.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        if (start >= 0 && end <= bytes.length && start < end) {
+            return new String(bytes, start, end - start, java.nio.charset.StandardCharsets.UTF_8);
         }
         return "";
     }
 
-    private Language detectLanguage(Path file) {
-        String ext = getExtension(file);
-        return EXTENSION_MAP.get(ext);
+    private TSLanguage detectLanguage(Path file) {
+        var supplier = EXTENSION_MAP.get(getExtension(file));
+        return supplier != null ? supplier.get() : null;
     }
 
     private String detectLangName(Path file) {
@@ -276,10 +279,6 @@ public class CodeParser {
             case ".rs" -> "rust";
             default -> "unknown";
         };
-    }
-
-    private boolean isCodeFile(Path file) {
-        return EXTENSION_MAP.containsKey(getExtension(file));
     }
 
     private String getExtension(Path file) {
