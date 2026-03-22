@@ -5,7 +5,6 @@ import ch.usi.si.seart.treesitter.Language;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
-import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -16,10 +15,9 @@ import java.util.*;
  * AST-aware code parser for embedding. Uses tree-sitter to parse source files
  * and produce Document chunks aligned to semantic boundaries (functions, classes, methods).
  *
- * Each chunk gets metadata: type=code, language, class_name, function_name, start_line, end_line.
- * Context prefix: [File:] [Language:] [Class:] [Method:] prepended for embedding quality.
+ * Instantiated as @Bean in VectorToolsAutoConfiguration (not @Component)
+ * because tree-sitter JNI may fail to load in some environments.
  */
-@Component
 public class CodeParser {
 
     private static final Logger log = LoggerFactory.getLogger(CodeParser.class);

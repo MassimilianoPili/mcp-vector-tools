@@ -30,7 +30,7 @@ public class ChunkingService {
     private final JdbcTemplate jdbc;
     private final ConversationParser conversationParser;
     private final MarkdownParser markdownParser;
-    private final CodeParser codeParser;
+    private final CodeParser codeParser;  // nullable — tree-sitter JNI may not load
     private final SyncTracker syncTracker;
     private final VectorProperties properties;
 
@@ -42,7 +42,7 @@ public class ChunkingService {
             @Qualifier("vectorJdbcTemplate") JdbcTemplate jdbc,
             ConversationParser conversationParser,
             MarkdownParser markdownParser,
-            CodeParser codeParser,
+            @org.springframework.lang.Nullable CodeParser codeParser,
             SyncTracker syncTracker,
             VectorProperties properties) {
         this.vectorStore = vectorStore;
@@ -203,6 +203,9 @@ public class ChunkingService {
     }
 
     public Map<String, Object> reindexCode() {
+        if (codeParser == null) {
+            return Map.of("error", "CodeParser not available (tree-sitter JNI not loaded)");
+        }
         String codePathsConfig = properties.getCodePaths();
         if (codePathsConfig == null || codePathsConfig.isBlank()) {
             return Map.of("error", "mcp.vector.code-paths non configurato");
